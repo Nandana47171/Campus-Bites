@@ -6,11 +6,13 @@ function ForgotPasswordPage() {
   const [emailError, setEmailError] = useState('')
   const navigate = useNavigate()
 
+  const emailPattern = /^[0-9]{2}[A-Za-z]+[0-9]{3}@adishankara\.ac\.in$/
+
   const handleEmailChange = (e) => {
     const value = e.target.value
     setEmail(value)
-    if (value && !value.endsWith('@adishankara.ac.in')) {
-      setEmailError('Please use your college email ending with @adishankara.ac.in')
+    if (value && !emailPattern.test(value)) {
+      setEmailError('Enter valid college email e.g. 23BCT001@adishankara.ac.in')
     } else {
       setEmailError('')
     }
@@ -18,8 +20,8 @@ function ForgotPasswordPage() {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    if (!email.endsWith('@adishankara.ac.in')) {
-      setEmailError('Please use your college email ending with @adishankara.ac.in')
+    if (!emailPattern.test(email)) {
+      setEmailError('Enter valid college email e.g. 23BCT001@adishankara.ac.in')
       return
     }
     console.log('OTP sent to', email)
@@ -54,7 +56,7 @@ function ForgotPasswordPage() {
             />
             {emailError ? (
               <p style={styles.errorText}>❌ {emailError}</p>
-            ) : email.endsWith('@adishankara.ac.in') ? (
+            ) : emailPattern.test(email) ? (
               <p style={styles.successText}>✅ Valid college email</p>
             ) : (
               <p style={styles.hint}>Only @adishankara.ac.in emails are accepted</p>
