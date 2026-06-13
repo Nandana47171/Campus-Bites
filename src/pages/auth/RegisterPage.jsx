@@ -1,8 +1,11 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import PasswordInput from '../../components/auth/PasswordInput'
 
+const REGISTERED_USER_KEY = 'campus_bites_registered_user'
+
 function RegisterPage() {
+  const navigate = useNavigate()
   const [form, setForm] = useState({
     firstName: '',
     lastName: '',
@@ -56,7 +59,13 @@ function RegisterPage() {
       alert('Please create a strong password — must have 8+ characters, uppercase, number and special character!')
       return
     }
-    console.log(form)
+
+    localStorage.setItem(REGISTERED_USER_KEY, JSON.stringify(form))
+    navigate('/login', {
+      state: {
+        registeredEmail: form.email,
+      },
+    })
   }
 
   return (

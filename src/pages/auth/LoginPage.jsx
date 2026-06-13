@@ -2,13 +2,30 @@ import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import PasswordInput from '../../components/auth/PasswordInput'
 
+const REGISTERED_USER_KEY = 'campus_bites_registered_user'
+
 function LoginPage() {
+  const storedUser = (() => {
+    try {
+      if (typeof localStorage === 'undefined') return null
+      const raw = localStorage.getItem(REGISTERED_USER_KEY)
+      return raw ? JSON.parse(raw) : null
+    } catch {
+      return null
+    }
+  })()
+
   const [admissionNumber, setAdmissionNumber] = useState('')
   const [password, setPassword] = useState('')
+  const registeredEmail = storedUser?.email || ''
 
   const handleLogin = (e) => {
     e.preventDefault()
-    console.log({ admissionNumber, password })
+    if (!registeredEmail) {
+      alert('Please register first with your college email')
+      return
+    }
+    console.log({ admissionNumber, email: registeredEmail, password })
   }
 
   return (

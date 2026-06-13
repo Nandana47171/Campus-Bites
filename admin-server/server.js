@@ -4,9 +4,30 @@ import { randomUUID } from 'node:crypto'
 const PORT = Number(process.env.PORT || 4000)
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'Admin@123'
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || ''
 const sessions = new Map()
 const SESSION_COOKIE = 'canteen_admin_session'
 const SESSION_TTL = 1000 * 60 * 60 * 8
+
+// Rate limiting for login attempts (in-memory)
+const loginAttempts = new Map()
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX || 5)
+const RATE_LIMIT_WINDOW = Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000) // 15 minutes
+
+// Optional IP allowlist (comma-separated IPv4/IPv6 strings)
+const IP_ALLOWLIST = process.env.IP_ALLOWLIST ? process.env.IP_ALLOWLIST.split(',').map(s => s.trim()).filter(Boolean) : null
+
+function getClientIp(req) {
+  const xf = req.headers['x-forwarded-for']
+  if (xf) return xf.split(',')[0].trim()
+  return req.socket.remoteAddress
+}
+
+// Require non-default credentials unless explicitly allowed (encourages safe defaults)
+if (ADMIN_USERNAME === 'admin' && ADMIN_PASSWORD === 'Admin@123' && process.env.ALLOW_DEFAULT_ADMIN !== 'true') {
+  console.error('Refusing to start: default admin credentials are in use. Set ADMIN_USERNAME and ADMIN_PASSWORD environment variables.')
+  process.exit(1)
+}
 
 function send(res, statusCode, body, headers = {}) {
   res.writeHead(statusCode, {
@@ -22,6 +43,15 @@ function sendJson(res, statusCode, data, headers = {}) {
     ...headers,
   })
   res.end(JSON.stringify(data))
+}
+
+function buildSessionCookie(sessionId, maxAgeSeconds = SESSION_TTL / 1000) {
+  const isSecure = (process.env.NODE_ENV === 'production') || false
+  // If running behind a proxy that terminates TLS, callers can set X-Forwarded-Proto
+  // We keep Secure in production to ensure cookies are only sent over HTTPS.
+  let cookie = `${SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${Math.floor(maxAgeSeconds)}`
+  if (isSecure) cookie += '; Secure'
+  return cookie
 }
 
 function readBody(req) {
@@ -74,7 +104,7 @@ function loginPage(message = '') {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Admin Login</title>
+    <title>Admin Sign In</title>
     <style>
       :root { color-scheme: dark; }
       * { box-sizing: border-box; }
@@ -138,6 +168,7 @@ function loginPage(message = '') {
         cursor: pointer;
       }
       .error { color: #dc2626; font-size: 12px; margin-bottom: 12px; }
+      .helper { font-size: 12px; color: #6b7280; margin: -10px 0 14px; }
       .hint { margin-top: 16px; font-size: 13px; text-align: center; }
       .hint a { color: #b45309; text-decoration: none; font-weight: 700; }
     </style>
@@ -145,13 +176,16 @@ function loginPage(message = '') {
   <body>
     <main class="card">
       <span class="badge">Admin access</span>
-      <h1>Admin Login</h1>
-      <p>Sign in with your admin credentials.</p>
+      <h1>Admin Sign In</h1>
+      <p>Sign in with your admin credentials and email.</p>
       <div class="warning">This area is restricted to authorized administrators.</div>
       ${message ? `<div class="error">${message}</div>` : ''}
       <form method="POST" action="/api/login">
         <label for="username">Admin Username</label>
         <input id="username" name="username" autocomplete="username" required />
+        <label for="email">Admin Email</label>
+        <input id="email" type="email" name="email" autocomplete="email" placeholder="admin@example.com" />
+        <p class="helper">Use this if your admin account is tied to an email address.</p>
         <label for="password">Admin Password</label>
         <input id="password" type="password" name="password" autocomplete="current-password" required />
         <button type="submit">Sign In as Admin</button>
@@ -272,15 +306,42 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/login') {
+      const clientIp = getClientIp(req)
+
+      // IP allowlist check
+      if (IP_ALLOWLIST && !IP_ALLOWLIST.includes(clientIp)) {
+        send(res, 403, loginPage('Access denied'))
+        return
+      }
+
+      // Rate limit check
+      const attempts = loginAttempts.get(clientIp) || { count: 0, firstAt: Date.now() }
+      if (Date.now() - attempts.firstAt < RATE_LIMIT_WINDOW && attempts.count >= RATE_LIMIT_MAX) {
+        send(res, 429, loginPage('Too many login attempts. Try again later.'))
+        return
+      }
+
       const body = await readBody(req)
       const payload = new URLSearchParams(body)
       const username = payload.get('username')?.trim() || ''
+      const email = payload.get('email')?.trim() || ''
       const password = payload.get('password')?.trim() || ''
 
-      if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD) {
+      const emailMatches = !ADMIN_EMAIL || email === ADMIN_EMAIL
+
+      if (username !== ADMIN_USERNAME || password !== ADMIN_PASSWORD || !emailMatches) {
+        // increment attempts
+        if (Date.now() - attempts.firstAt > RATE_LIMIT_WINDOW) {
+          loginAttempts.set(clientIp, { count: 1, firstAt: Date.now() })
+        } else {
+          loginAttempts.set(clientIp, { count: attempts.count + 1, firstAt: attempts.firstAt })
+        }
         send(res, 401, loginPage('Invalid admin credentials.'))
         return
       }
+
+      // successful login -> reset attempts
+      loginAttempts.delete(clientIp)
 
       const sessionId = randomUUID()
       sessions.set(sessionId, {
@@ -290,7 +351,7 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(302, {
         Location: '/dashboard',
-        'Set-Cookie': `${SESSION_COOKIE}=${sessionId}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL / 1000}`,
+        'Set-Cookie': buildSessionCookie(sessionId),
       })
       res.end()
       return
@@ -308,7 +369,7 @@ const server = http.createServer(async (req, res) => {
       const sessionId = cookies[SESSION_COOKIE]
       if (sessionId) sessions.delete(sessionId)
       res.writeHead(204, {
-        'Set-Cookie': `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
+        'Set-Cookie': `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`,
       })
       res.end()
       return
@@ -350,7 +411,7 @@ async function startServer() {
 
     server.listen(currentPort, () => {
       console.log(`Admin server running on http://localhost:${currentPort}`)
-      console.log(`Default admin credentials: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}`)
+      console.log(`Admin username: ${ADMIN_USERNAME}`)
       if (currentPort !== PORT) {
         console.log(`Port ${PORT} was busy, so the server switched to ${currentPort}`)
       }
